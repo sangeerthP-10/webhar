@@ -1,178 +1,129 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import './App.css';
 import { HarmoniumKeys } from './components/HarmoniumKeys';
-import { WaveformCanvas } from './components/WaveformCanvas';
-import { API_BASE, NOTE_LAYOUT } from './constants';
-import { useMetronome } from './hooks/useMetronome';
-import { usePitchDetector } from './hooks/usePitchDetector';
+import { PitchVisualizer } from './components/PitchVisualizer';
+import { Metronome } from './components/Metronome';
+import { RecordingPanel } from './components/RecordingPanel';
+import { AlankarPlayer } from './components/AlankarPlayer';
+import { NOTE_LAYOUT } from './utils/noteLayout';
+import { useAudioEngine } from './hooks/useAudioEngine';
+import { usePitchDetection } from './hooks/usePitchDetection';
 import { useRecorder } from './hooks/useRecorder';
-import { useSynth } from './hooks/useSynth';
+
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 
 function App() {
-  const [notes, setNotes] = useState(NOTE_LAYOUT.map((n) => n.note));
-  const [activeNote, setActiveNote] = useState('');
+  const [notes, setNotes] = useState(NOTE_LAYOUT);
+  const [activeNote, setActiveNote] = useState('—');
   const [sessionId, setSessionId] = useState('');
-  const pressedKeys = useRef(new Set());
+  const [bpm, setBpm] = useState(96);
+  const [metroOn, setMetroOn] = useState(false);
+  const held = useRef(new Set());
 
-  const { playNote, clickMetronome, getRecordingStream } = useSynth();
-  const { pitch, note: detectedNote, enabled, error: pitchError, enable, analyser } = usePitchDetector();
-  const { isRunning, setIsRunning, bpm, setBpm } = useMetronome((accent) => clickMetronome(accent));
-  const { isRecording, clips, error: recordingError, start, stop, loadForSession } = useRecorder(sessionId);
+  const { playNote, clickMetronome, getRecordingStream } = useAudioEngine();
+  const { enabled, pitchHz, noteName, error: pitchError, enableMic, analyser } = usePitchDetection();
+  const { isRecording, clips, error: recordingError, startRecording, stopRecording } = useRecorder(sessionId);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/notes`)
-      .then((res) => res.json())
-      .then((data) => setNotes(data.notes || NOTE_LAYOUT.map((n) => n.note)))
-      .catch(() => setNotes(NOTE_LAYOUT.map((n) => n.note)));
-
-    fetch(`${API_BASE}/api/sessions`, { method: 'POST' })
+    fetch(`${API_BASE}/notes`)
       .then((res) => res.json())
       .then((data) => {
-        setSessionId(data.sessionId);
-        loadForSession(data.sessionId);
+        const available = new Set(data.notes || []);
+        setNotes(NOTE_LAYOUT.filter((item) => available.has(item.note)));
       })
+      .catch(() => setNotes(NOTE_LAYOUT));
+
+    fetch(`${API_BASE}/sessions`, { method: 'POST' })
+      .then((res) => res.json())
+      .then((data) => setSessionId(data.sessionId))
       .catch(() => setSessionId(crypto.randomUUID()));
-  }, [loadForSession]);
+  }, []);
 
-  const keyLayout = useMemo(
-    () => NOTE_LAYOUT.filter((item) => notes.includes(item.note)),
-    [notes]
-  );
-
-  const playAndHighlight = useCallback(
+  const playAndFlash = useCallback(
     (note) => {
       playNote(note);
       setActiveNote(note);
-      setTimeout(() => setActiveNote((prev) => (prev === note ? '' : prev)), 200);
+      setTimeout(() => setActiveNote((current) => (current === note ? '—' : current)), 220);
     },
     [playNote]
   );
 
   useEffect(() => {
-    const keyMap = new Map(keyLayout.map((item) => [item.key.toLowerCase(), item.note]));
+    const keyMap = new Map(notes.map((n) => [n.key.toLowerCase(), n.note]));
 
-    const onDown = (event) => {
+    const down = (event) => {
       const key = event.key.toLowerCase();
       const note = keyMap.get(key);
-      if (!note || pressedKeys.current.has(key)) return;
-      pressedKeys.current.add(key);
-      playAndHighlight(note);
+      if (!note || held.current.has(key)) return;
+      held.current.add(key);
+      playAndFlash(note);
     };
 
-    const onUp = (event) => {
-      pressedKeys.current.delete(event.key.toLowerCase());
-    };
-
-    window.addEventListener('keydown', onDown);
-    window.addEventListener('keyup', onUp);
+    const up = (event) => held.current.delete(event.key.toLowerCase());
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
     return () => {
-      window.removeEventListener('keydown', onDown);
-      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
     };
-  }, [keyLayout, playAndHighlight]);
+  }, [notes, playAndFlash]);
+
+  useEffect(() => {
+    if (!metroOn) return undefined;
+    let beat = 0;
+    const id = setInterval(() => {
+      clickMetronome(beat === 0);
+      beat = (beat + 1) % 4;
+    }, (60 / bpm) * 1000);
+
+    return () => clearInterval(id);
+  }, [metroOn, bpm, clickMetronome]);
 
   const toggleRecording = () => {
-    if (isRecording) {
-      stop();
-      return;
-    }
-    start(getRecordingStream());
+    if (isRecording) stopRecording();
+    else startRecording(getRecordingStream());
   };
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-black px-4 py-8 text-slate-100 sm:px-6">
-      <div className="mx-auto w-full max-w-6xl rounded-3xl border border-cyan-400/20 bg-gradient-to-b from-slate-900 to-slate-950 p-5 shadow-[0_35px_120px_rgba(0,0,0,0.55)] sm:p-8">
-        <header className="mb-6 text-center">
-          <p className="text-xs uppercase tracking-[0.28em] text-cyan-300/80">Laptop Harmonium Pro</p>
-          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Performance Desk</h1>
-          <p className="mx-auto mt-3 max-w-2xl text-sm text-slate-300 sm:text-base">
-            Inspired by Digonto harmonium experiment, rebuilt with keyboard control, pitch detection, metronome and recording.
+    <main className="app-shell">
+      <div className="app-inner">
+        <header>
+          <p style={{ letterSpacing: '0.25em', textTransform: 'uppercase', color: '#67e8f9', fontSize: '0.75rem' }}>
+            Laptop Harmonium Pro
+          </p>
+          <h1 style={{ margin: '0.2rem 0 0.6rem' }}>Modern Harmonium Studio</h1>
+          <p style={{ color: '#94a3b8', marginBottom: '0.8rem' }}>
+            Real harmonium-style keys, keyboard controls, pitch detection, metronome, recording, and alankar playback.
           </p>
         </header>
 
-        <section className="mb-5 grid gap-3 rounded-2xl border border-slate-700 bg-slate-900/60 p-4 sm:grid-cols-4">
-          <div>
-            <p className="text-[11px] uppercase tracking-widest text-slate-400">Now Playing</p>
-            <p className="mt-1 text-2xl font-bold text-cyan-300">{activeNote || '—'}</p>
-          </div>
-          <div>
-            <p className="text-[11px] uppercase tracking-widest text-slate-400">Detected Pitch</p>
-            <p className="mt-1 text-2xl font-bold text-emerald-300">{pitch ? `${Math.round(pitch)} Hz` : '—'}</p>
-          </div>
-          <div>
-            <p className="text-[11px] uppercase tracking-widest text-slate-400">Detected Note</p>
-            <p className="mt-1 text-2xl font-bold text-amber-300">{detectedNote}</p>
-          </div>
-          <div>
-            <p className="text-[11px] uppercase tracking-widest text-slate-400">Session</p>
-            <p className="mt-1 truncate text-xs text-slate-300">{sessionId || 'creating...'}</p>
-          </div>
+        <section className="top-grid">
+          <div className="stat-box"><small>Now Playing</small><h3>{activeNote}</h3></div>
+          <div className="stat-box"><small>Pitch</small><h3>{pitchHz ? `${Math.round(pitchHz)} Hz` : '—'}</h3></div>
+          <div className="stat-box"><small>Detected Note</small><h3>{noteName}</h3></div>
+          <div className="stat-box"><small>Session ID</small><p style={{ fontSize: '0.75rem' }}>{sessionId || 'creating...'}</p></div>
         </section>
 
-        <HarmoniumKeys layout={keyLayout} activeNote={activeNote} onPlay={playAndHighlight} />
+        <HarmoniumKeys notes={notes} activeNote={activeNote} onTrigger={playAndFlash} />
 
-        <section className="mt-5 grid gap-4 lg:grid-cols-2">
-          <div className="rounded-2xl border border-slate-700 bg-slate-900/60 p-4">
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-widest text-slate-300">Pitch & Waveform</h2>
-            <button
-              type="button"
-              onClick={enable}
-              disabled={enabled}
-              className="mb-3 rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {enabled ? 'Microphone enabled' : 'Enable microphone'}
-            </button>
-            {pitchError && <p className="mb-3 text-sm text-rose-300">{pitchError}</p>}
-            <WaveformCanvas analyser={analyser} />
-            <p className="mt-2 text-xs text-slate-400">Waveform appears after microphone permission is granted.</p>
-          </div>
+        <div className="panel" style={{ marginBottom: '1rem' }}>
+          <h3>Pitch Detection</h3>
+          <button type="button" className="btn btn-cyan" onClick={enableMic} disabled={enabled}>
+            {enabled ? 'Microphone Enabled' : 'Enable Microphone'}
+          </button>
+          {pitchError && <p className="error-text">{pitchError}</p>}
+          <PitchVisualizer analyser={analyser} pitchHz={pitchHz} />
+        </div>
 
-          <div className="rounded-2xl border border-slate-700 bg-slate-900/60 p-4">
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-widest text-slate-300">Metronome & Recording</h2>
-            <div className="mb-4 flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setIsRunning((prev) => !prev)}
-                className="rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-400"
-              >
-                {isRunning ? 'Stop metronome' : 'Start metronome'}
-              </button>
-              <label className="text-sm text-slate-300">
-                BPM: {bpm}
-                <input
-                  className="ml-2 accent-violet-400"
-                  type="range"
-                  min="40"
-                  max="180"
-                  value={bpm}
-                  onChange={(e) => setBpm(Number(e.target.value))}
-                />
-              </label>
-            </div>
-
-            <button
-              type="button"
-              onClick={toggleRecording}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                isRecording ? 'bg-rose-500 text-white hover:bg-rose-400' : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
-              }`}
-            >
-              {isRecording ? 'Stop recording' : 'Start recording'}
-            </button>
-            {recordingError && <p className="mt-2 text-sm text-rose-300">{recordingError}</p>}
-
-            <div className="mt-4 space-y-2">
-              {clips.map((clip) => (
-                <div key={clip.id} className="rounded-lg border border-slate-700 p-2">
-                  <p className="mb-1 text-xs text-slate-400">{new Date(clip.createdAt).toLocaleString()}</p>
-                  <audio controls src={clip.localUrl || `${API_BASE}${clip.url}`} className="w-full" />
-                </div>
-              ))}
-              {clips.length === 0 && <p className="text-sm text-slate-400">No recordings yet.</p>}
-            </div>
-          </div>
+        <section className="bottom-grid">
+          <Metronome bpm={bpm} isRunning={metroOn} onToggle={() => setMetroOn((v) => !v)} onBpmChange={setBpm} />
+          <RecordingPanel isRecording={isRecording} clips={clips} error={recordingError} onToggle={toggleRecording} />
+          <AlankarPlayer notes={notes} onPlay={playAndFlash} />
         </section>
 
-        <p className="mt-6 text-center text-xs text-slate-500">Keyboard mapping: A W S E D F T G Y H U J K</p>
+        <p style={{ marginTop: '1rem', color: '#94a3b8', fontSize: '0.85rem' }}>
+          Keyboard mapping: A W S E D F T G Y H U J K (includes requested A/S/D/F controls).
+        </p>
       </div>
     </main>
   );

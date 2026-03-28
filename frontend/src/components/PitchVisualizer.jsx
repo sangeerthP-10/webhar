@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 
-export function WaveformCanvas({ analyser }) {
+export function PitchVisualizer({ analyser, pitchHz }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -8,13 +8,13 @@ export function WaveformCanvas({ analyser }) {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     const data = new Uint8Array(analyser.fftSize);
-    let raf = null;
+    let raf;
 
     const draw = () => {
       analyser.getByteTimeDomainData(data);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#0f172a';
+      ctx.fillStyle = '#020617';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
+
       ctx.strokeStyle = '#22d3ee';
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -26,14 +26,17 @@ export function WaveformCanvas({ analyser }) {
         else ctx.lineTo(x, y);
       }
       ctx.stroke();
+
+      ctx.fillStyle = '#a3e635';
+      ctx.font = 'bold 16px Inter';
+      ctx.fillText(`Pitch: ${pitchHz ? Math.round(pitchHz) : 0} Hz`, 16, 26);
+
       raf = requestAnimationFrame(draw);
     };
 
     draw();
-    return () => {
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [analyser]);
+    return () => cancelAnimationFrame(raf);
+  }, [analyser, pitchHz]);
 
-  return <canvas ref={canvasRef} width={900} height={160} className="h-36 w-full rounded-xl border border-cyan-400/30" />;
+  return <canvas ref={canvasRef} width={860} height={170} className="visualizer" />;
 }

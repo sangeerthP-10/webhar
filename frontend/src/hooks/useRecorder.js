@@ -1,69 +1,58 @@
-import { useCallback, useRef, useState } from 'react';
-import { API_BASE } from '../constants';
+import { useRef, useState } from 'react';
+
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 
 export function useRecorder(sessionId) {
   const [isRecording, setIsRecording] = useState(false);
   const [clips, setClips] = useState([]);
   const [error, setError] = useState('');
-  const mediaRecorderRef = useRef(null);
+  const recorderRef = useRef(null);
   const chunksRef = useRef([]);
 
-  const loadForSession = useCallback(async (id) => {
-    if (!id) return;
-    try {
-      const response = await fetch(`${API_BASE}/api/recordings/${id}`);
-      const data = await response.json();
-      setClips((data.recordings || []).map((r) => ({ ...r, localUrl: `${API_BASE}${r.url}` })));
-    } catch {
-      // Ignore preload failures.
-    }
-  }, []);
-
-  const start = (stream) => {
+  const startRecording = (stream) => {
     try {
       chunksRef.current = [];
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-      mediaRecorderRef.current = mediaRecorder;
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      recorderRef.current = recorder;
 
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
       };
 
-      mediaRecorder.onstop = async () => {
+      recorder.onstop = async () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
         const localUrl = URL.createObjectURL(blob);
-        const form = new FormData();
-        form.append('audio', blob, `clip-${Date.now()}.webm`);
-        form.append('sessionId', sessionId);
+        const formData = new FormData();
+        formData.append('audio', blob, `take-${Date.now()}.webm`);
+        formData.append('sessionId', sessionId);
 
         try {
-          const response = await fetch(`${API_BASE}/api/recordings`, {
+          const response = await fetch(`${API_BASE}/recordings`, {
             method: 'POST',
-            body: form
+            body: formData
           });
           const data = await response.json();
           setClips((prev) => [{ ...data.recording, localUrl }, ...prev]);
         } catch {
-          setClips((prev) => [{ id: crypto.randomUUID(), localUrl, createdAt: new Date().toISOString() }, ...prev]);
-          setError('Saved locally only (backend unavailable).');
+          setClips((prev) => [{ id: crypto.randomUUID(), createdAt: new Date().toISOString(), localUrl }, ...prev]);
+          setError('Saved only in browser (backend unavailable).');
         }
       };
 
-      mediaRecorder.start();
+      recorder.start();
       setIsRecording(true);
       setError('');
     } catch {
-      setError('Recording is not supported in this browser.');
+      setError('Recording not supported in this browser.');
     }
   };
 
-  const stop = () => {
-    const recorder = mediaRecorderRef.current;
-    if (recorder && recorder.state !== 'inactive') {
-      recorder.stop();
+  const stopRecording = () => {
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      recorderRef.current.stop();
       setIsRecording(false);
     }
   };
 
-  return { isRecording, clips, error, start, stop, loadForSession };
+  return { isRecording, clips, error, startRecording, stopRecording };
 }

@@ -1,7 +1,8 @@
 import { Router } from 'express';
-import { NOTES } from '../notes.js';
 
 const router = Router();
+
+const NOTES = ['C4', 'C#4', 'D4', 'D#4', 'E4', 'F4', 'F#4', 'G4', 'G#4', 'A4', 'A#4', 'B4', 'C5'];
 
 router.get('/notes', (_req, res) => {
   res.json({ notes: NOTES });
