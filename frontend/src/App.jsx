@@ -1,196 +1,178 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
-const FALLBACK_NOTES = ['C4', 'C#4', 'D4', 'D#4', 'E4', 'F4', 'F#4', 'G4', 'G#4', 'A4', 'A#4', 'B4', 'C5'];
-const KEYBOARD_LAYOUT = ['A', 'W', 'S', 'E', 'D', 'F', 'T', 'G', 'Y', 'H', 'U', 'J', 'K'];
-
-function createFrequency(note) {
-  const match = note.match(/^([A-G]#?)(\d)$/);
-  if (!match) return 440;
-
-  const semitones = {
-    C: -9,
-    'C#': -8,
-    D: -7,
-    'D#': -6,
-    E: -5,
-    F: -4,
-    'F#': -3,
-    G: -2,
-    'G#': -1,
-    A: 0,
-    'A#': 1,
-    B: 2
-  };
-
-  const [, pitch, octaveRaw] = match;
-  const octave = Number(octaveRaw);
-  const semitoneDistance = semitones[pitch] + (octave - 4) * 12;
-  return 440 * 2 ** (semitoneDistance / 12);
-}
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { HarmoniumKeys } from './components/HarmoniumKeys';
+import { WaveformCanvas } from './components/WaveformCanvas';
+import { API_BASE, NOTE_LAYOUT } from './constants';
+import { useMetronome } from './hooks/useMetronome';
+import { usePitchDetector } from './hooks/usePitchDetector';
+import { useRecorder } from './hooks/useRecorder';
+import { useSynth } from './hooks/useSynth';
 
 function App() {
-  const [notes, setNotes] = useState([]);
+  const [notes, setNotes] = useState(NOTE_LAYOUT.map((n) => n.note));
   const [activeNote, setActiveNote] = useState('');
-  const [loading, setLoading] = useState(true);
-  const audioCtxRef = useRef(null);
-  const pressedKeysRef = useRef(new Set());
+  const [sessionId, setSessionId] = useState('');
+  const pressedKeys = useRef(new Set());
+
+  const { playNote, clickMetronome, getRecordingStream } = useSynth();
+  const { pitch, note: detectedNote, enabled, error: pitchError, enable, analyser } = usePitchDetector();
+  const { isRunning, setIsRunning, bpm, setBpm } = useMetronome((accent) => clickMetronome(accent));
+  const { isRecording, clips, error: recordingError, start, stop, loadForSession } = useRecorder(sessionId);
 
   useEffect(() => {
-    const fetchNotes = async () => {
-      try {
-        const response = await fetch(`${API_BASE}/api/notes`);
-        const data = await response.json();
-        setNotes(data.notes || FALLBACK_NOTES);
-      } catch {
-        setNotes(FALLBACK_NOTES);
-      } finally {
-        setLoading(false);
-      }
-    };
+    fetch(`${API_BASE}/api/notes`)
+      .then((res) => res.json())
+      .then((data) => setNotes(data.notes || NOTE_LAYOUT.map((n) => n.note)))
+      .catch(() => setNotes(NOTE_LAYOUT.map((n) => n.note)));
 
-    fetchNotes();
-  }, []);
+    fetch(`${API_BASE}/api/sessions`, { method: 'POST' })
+      .then((res) => res.json())
+      .then((data) => {
+        setSessionId(data.sessionId);
+        loadForSession(data.sessionId);
+      })
+      .catch(() => setSessionId(crypto.randomUUID()));
+  }, [loadForSession]);
 
   const keyLayout = useMemo(
-    () =>
-      notes.map((note, index) => ({
-        note,
-        isSharp: note.includes('#'),
-        triggerKey: KEYBOARD_LAYOUT[index] ?? ''
-      })),
+    () => NOTE_LAYOUT.filter((item) => notes.includes(item.note)),
     [notes]
   );
 
-  const keyToNote = useMemo(() => {
-    const map = new Map();
-    keyLayout.forEach(({ note, triggerKey }) => {
-      if (triggerKey) {
-        map.set(triggerKey.toLowerCase(), note);
-      }
-    });
-    return map;
-  }, [keyLayout]);
-
-  const playNote = (note) => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new window.AudioContext();
-    }
-
-    const context = audioCtxRef.current;
-    const now = context.currentTime;
-    const oscillator = context.createOscillator();
-    const gainNode = context.createGain();
-
-    oscillator.type = 'triangle';
-    oscillator.frequency.value = createFrequency(note);
-    gainNode.gain.setValueAtTime(0.0001, now);
-    gainNode.gain.exponentialRampToValueAtTime(0.24, now + 0.03);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
-
-    oscillator.connect(gainNode);
-    gainNode.connect(context.destination);
-
-    oscillator.start(now);
-    oscillator.stop(now + 0.55);
-
-    setActiveNote(note);
-    setTimeout(() => {
-      setActiveNote((prev) => (prev === note ? '' : prev));
-    }, 220);
-  };
+  const playAndHighlight = useCallback(
+    (note) => {
+      playNote(note);
+      setActiveNote(note);
+      setTimeout(() => setActiveNote((prev) => (prev === note ? '' : prev)), 200);
+    },
+    [playNote]
+  );
 
   useEffect(() => {
-    const handleKeyDown = (event) => {
+    const keyMap = new Map(keyLayout.map((item) => [item.key.toLowerCase(), item.note]));
+
+    const onDown = (event) => {
       const key = event.key.toLowerCase();
-      const note = keyToNote.get(key);
-
-      if (!note || pressedKeysRef.current.has(key)) {
-        return;
-      }
-
-      pressedKeysRef.current.add(key);
-      playNote(note);
+      const note = keyMap.get(key);
+      if (!note || pressedKeys.current.has(key)) return;
+      pressedKeys.current.add(key);
+      playAndHighlight(note);
     };
 
-    const handleKeyUp = (event) => {
-      pressedKeysRef.current.delete(event.key.toLowerCase());
+    const onUp = (event) => {
+      pressedKeys.current.delete(event.key.toLowerCase());
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
     };
-  }, [keyToNote]);
+  }, [keyLayout, playAndHighlight]);
+
+  const toggleRecording = () => {
+    if (isRecording) {
+      stop();
+      return;
+    }
+    start(getRecordingStream());
+  };
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-purple-950 px-4 py-10 text-slate-100 sm:py-12">
-      <div className="mx-auto w-full max-w-6xl rounded-[2rem] border border-amber-200/20 bg-gradient-to-b from-amber-900/35 via-amber-950/20 to-black/20 p-4 shadow-[0_30px_80px_rgba(0,0,0,0.45)] backdrop-blur sm:p-8">
-        <header className="mb-6 text-center sm:mb-8">
-          <p className="mb-2 text-xs uppercase tracking-[0.28em] text-amber-200/80">Laptop Harmonium</p>
-          <h1 className="text-3xl font-semibold sm:text-4xl">Play with mouse or keyboard</h1>
-          <p className="mx-auto mt-3 max-w-2xl text-sm text-amber-50/80 sm:text-base">
-            Inspired by Indian harmonium layouts — press mapped keys (A, W, S, E...) or click the reeds below.
+    <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-black px-4 py-8 text-slate-100 sm:px-6">
+      <div className="mx-auto w-full max-w-6xl rounded-3xl border border-cyan-400/20 bg-gradient-to-b from-slate-900 to-slate-950 p-5 shadow-[0_35px_120px_rgba(0,0,0,0.55)] sm:p-8">
+        <header className="mb-6 text-center">
+          <p className="text-xs uppercase tracking-[0.28em] text-cyan-300/80">Laptop Harmonium Pro</p>
+          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Performance Desk</h1>
+          <p className="mx-auto mt-3 max-w-2xl text-sm text-slate-300 sm:text-base">
+            Inspired by Digonto harmonium experiment, rebuilt with keyboard control, pitch detection, metronome and recording.
           </p>
         </header>
 
-        <section className="mb-6 grid gap-3 rounded-2xl border border-amber-100/20 bg-black/30 p-4 text-center sm:mb-8 sm:grid-cols-3 sm:text-left">
+        <section className="mb-5 grid gap-3 rounded-2xl border border-slate-700 bg-slate-900/60 p-4 sm:grid-cols-4">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.2em] text-amber-100/60">Now Playing</p>
+            <p className="text-[11px] uppercase tracking-widest text-slate-400">Now Playing</p>
             <p className="mt-1 text-2xl font-bold text-cyan-300">{activeNote || '—'}</p>
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-[0.2em] text-amber-100/60">Keyboard Mode</p>
-            <p className="mt-1 text-sm text-amber-50/85">Tap A W S E D F T G Y H U J K</p>
+            <p className="text-[11px] uppercase tracking-widest text-slate-400">Detected Pitch</p>
+            <p className="mt-1 text-2xl font-bold text-emerald-300">{pitch ? `${Math.round(pitch)} Hz` : '—'}</p>
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-[0.2em] text-amber-100/60">Tip</p>
-            <p className="mt-1 text-sm text-amber-50/85">Use headphones for cleaner synth tone.</p>
+            <p className="text-[11px] uppercase tracking-widest text-slate-400">Detected Note</p>
+            <p className="mt-1 text-2xl font-bold text-amber-300">{detectedNote}</p>
+          </div>
+          <div>
+            <p className="text-[11px] uppercase tracking-widest text-slate-400">Session</p>
+            <p className="mt-1 truncate text-xs text-slate-300">{sessionId || 'creating...'}</p>
           </div>
         </section>
 
-        {loading ? (
-          <div className="py-20 text-center text-amber-100/80">Loading notes...</div>
-        ) : (
-          <section className="overflow-x-auto rounded-2xl border border-amber-100/15 bg-gradient-to-b from-amber-800/30 to-amber-950/40 p-4 sm:p-6">
-            <div className="mx-auto flex min-w-[860px] justify-center gap-2">
-              {keyLayout.map(({ note, isSharp, triggerKey }) => {
-                const isActive = activeNote === note;
+        <HarmoniumKeys layout={keyLayout} activeNote={activeNote} onPlay={playAndHighlight} />
 
-                return (
-                  <button
-                    key={note}
-                    type="button"
-                    onClick={() => playNote(note)}
-                    className={`group relative border transition-all duration-150 active:translate-y-1 ${
-                      isSharp
-                        ? 'z-10 -mx-2 h-44 w-16 rounded-xl border-slate-700 bg-gradient-to-b from-slate-700 to-slate-950 text-slate-100 hover:from-slate-600 hover:to-slate-900'
-                        : 'h-64 w-20 rounded-b-2xl border-slate-200/40 bg-gradient-to-b from-white via-slate-100 to-slate-300 text-slate-900 hover:from-white hover:to-slate-200'
-                    } ${isActive ? 'scale-[1.01] ring-4 ring-cyan-300/60' : ''}`}
-                  >
-                    <span
-                      className={`absolute left-1/2 top-3 -translate-x-1/2 rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wider ${
-                        isSharp ? 'bg-slate-200/15 text-slate-100' : 'bg-slate-800/80 text-slate-100'
-                      }`}
-                    >
-                      {triggerKey || '—'}
-                    </span>
-                    <span
-                      className={`absolute bottom-3 left-1/2 -translate-x-1/2 text-sm font-semibold transition-transform duration-200 group-hover:-translate-y-0.5 ${
-                        isSharp ? 'text-slate-200' : 'text-slate-800'
-                      }`}
-                    >
-                      {note}
-                    </span>
-                  </button>
-                );
-              })}
+        <section className="mt-5 grid gap-4 lg:grid-cols-2">
+          <div className="rounded-2xl border border-slate-700 bg-slate-900/60 p-4">
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-widest text-slate-300">Pitch & Waveform</h2>
+            <button
+              type="button"
+              onClick={enable}
+              disabled={enabled}
+              className="mb-3 rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {enabled ? 'Microphone enabled' : 'Enable microphone'}
+            </button>
+            {pitchError && <p className="mb-3 text-sm text-rose-300">{pitchError}</p>}
+            <WaveformCanvas analyser={analyser} />
+            <p className="mt-2 text-xs text-slate-400">Waveform appears after microphone permission is granted.</p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-700 bg-slate-900/60 p-4">
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-widest text-slate-300">Metronome & Recording</h2>
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setIsRunning((prev) => !prev)}
+                className="rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-400"
+              >
+                {isRunning ? 'Stop metronome' : 'Start metronome'}
+              </button>
+              <label className="text-sm text-slate-300">
+                BPM: {bpm}
+                <input
+                  className="ml-2 accent-violet-400"
+                  type="range"
+                  min="40"
+                  max="180"
+                  value={bpm}
+                  onChange={(e) => setBpm(Number(e.target.value))}
+                />
+              </label>
             </div>
-          </section>
-        )}
+
+            <button
+              type="button"
+              onClick={toggleRecording}
+              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                isRecording ? 'bg-rose-500 text-white hover:bg-rose-400' : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
+              }`}
+            >
+              {isRecording ? 'Stop recording' : 'Start recording'}
+            </button>
+            {recordingError && <p className="mt-2 text-sm text-rose-300">{recordingError}</p>}
+
+            <div className="mt-4 space-y-2">
+              {clips.map((clip) => (
+                <div key={clip.id} className="rounded-lg border border-slate-700 p-2">
+                  <p className="mb-1 text-xs text-slate-400">{new Date(clip.createdAt).toLocaleString()}</p>
+                  <audio controls src={clip.localUrl || `${API_BASE}${clip.url}`} className="w-full" />
+                </div>
+              ))}
+              {clips.length === 0 && <p className="text-sm text-slate-400">No recordings yet.</p>}
+            </div>
+          </div>
+        </section>
+
+        <p className="mt-6 text-center text-xs text-slate-500">Keyboard mapping: A W S E D F T G Y H U J K</p>
       </div>
     </main>
   );
