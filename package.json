@@ -1,0 +1,19 @@
+{
+  "name": "laptop-harmonium",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c cyan,magenta \"npm run dev --workspace backend\" \"npm run dev --workspace frontend\"",
+    "dev:backend": "npm run dev --workspace backend",
+    "dev:frontend": "npm run dev --workspace frontend",
+    "start": "npm run start --workspace backend",
+    "build": "npm run build --workspace frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}
